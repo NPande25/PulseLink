@@ -13,11 +13,11 @@
 MD_MAX72XX lc = MD_MAX72XX(MD_MAX72XX::FC16_HW, DATA_PIN, CLK_PIN, CS_PIN, MAX_DEVICES);
 
 // --- BLE Variables ---
-const char* myID = "pulseA";  // Change per device
+const char* myID = "pulseA";  // Change this for each device
 BLEAdvertising* pAdvertising;
 
 // --- Position Tracking ---
-float myX = 0.0, myY = 0.0;  // Assume device A at origin
+float myX = 0.0, myY = 0.0;  // Device's position
 
 // --- Friends ---
 struct FriendData {
@@ -52,7 +52,7 @@ void setDisplayPattern2D() {
     float distance = sqrt(dx * dx + dy * dy);
 
     float angleToFriend = atan2(dy, dx) * 180.0 / 3.1415926;
-    float angleRad = degToRad(fmod((angleToFriend + 360), 360));  // No compass rotation
+    float angleRad = degToRad(fmod((angleToFriend + 360), 360));  // No heading correction
 
     int radius = 0;
     if (distance <= 5) radius = 1;
@@ -125,11 +125,12 @@ void setupBLE() {
   NimBLEServer* pServer = NimBLEDevice::createServer();
   pAdvertising = pServer->getAdvertising();
   pAdvertising->start();
+  Serial.println("📶 BLE advertising started.");
 }
 
 void updateAdvertisement(float x, float y) {
   const char* key = "PLNK";
-  float payload[3] = {x, y, 0.0};  // pressure unused
+  float payload[3] = {x, y, 0.0};  // third float unused
   std::string out(key, 4);
   out.append((char*)payload, sizeof(payload));
   pAdvertising->setManufacturerData(out);
@@ -149,6 +150,7 @@ void setup() {
 
   setupDisplay();
 
+  // Set fixed position
   if (strcmp(myID, "pulseA") == 0) {
     myX = 0.0;
     myY = 0.0;
@@ -159,23 +161,32 @@ void setup() {
 
   setupBLE();
 
+  // Set up scan (but start it later in loop)
   NimBLEScan* pScan = NimBLEDevice::getScan();
   pScan->setScanCallbacks(new MyScanCallbacks());
   pScan->setActiveScan(true);
-  pScan->start(1, false);  // ✅ non-blocking BLE scan
+  Serial.println("📶 BLE scan prepared.");
 }
 
 // --- Loop ---
 void loop() {
+  static bool scanStarted = false;
+  if (!scanStarted) {
+    NimBLEDevice::getScan()->start(1, false);  // ✅ Safe to call now
+    Serial.println("🔍 BLE scan started from loop");
+    scanStarted = true;
+  }
+
   updateAdvertisement(myX, myY);
   setDisplayPattern2D();
 
-  // Periodically clear BLE scan results to avoid memory overflow
+  // Clear old scan results every 5s
   static unsigned long lastScanReset = 0;
   if (millis() - lastScanReset > 5000) {
     NimBLEDevice::getScan()->clearResults();
     lastScanReset = millis();
   }
 
+  Serial.println("🔄 Loop running");
   delay(200);
 }
