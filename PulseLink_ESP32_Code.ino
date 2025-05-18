@@ -1,163 +1,208 @@
-// PulseLink ESP32 Code: BLE + BME280 + Compass + 8x8 Matrix with Multi-Device Support
-// Uses (x, y) relative positioning from a shared origin device (e.g., pulseA is 0,0)
-// Each device advertises its location and elevation. Others receive this and display directional
-// feedback using a rotating LED matrix, adjusting for compass heading and pressure difference.
-
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
-#include <Adafruit_BME280.h>       // Barometric pressure sensor
-#include <LedControl.h>            // For controlling the MAX7219 LED matrix
-#include <NimBLEDevice.h>          // BLE library for ESP32
-#include <QMC5883LCompass.h>       // Magnetometer (compass)
+#include <Adafruit_BME280.h>
+#include <MD_MAX72xx.h>
+#include <SPI.h>
+#include <NimBLEDevice.h>
+#include <QMC5883LCompass.h>
 
-// --- Sensor Initialization ---
+// --- Sensor Setup ---
 Adafruit_BME280 bme;
 QMC5883LCompass compass;
-LedControl lc = LedControl(11, 13, 10, 1);  // (DIN, CLK, CS, numDevices)
+
+#define DATA_PIN  12
+#define CLK_PIN   11
+#define CS_PIN    10
+#define MAX_DEVICES 1
+MD_MAX72XX lc = MD_MAX72XX(MD_MAX72XX::FC16_HW, DATA_PIN, CLK_PIN, CS_PIN, MAX_DEVICES);
 
 // --- BLE Variables ---
-const char* myID = "pulseA";  // Identifier for this device; pulseA is considered the origin (0,0)
+const char* myID = "pulseA";  // Change per device
 BLEAdvertising* pAdvertising;
 
 // --- Self Tracking ---
-float myX = 0.0, myY = 0.0;          // Device's current position
-float myPressure = 0.0;             // Measured pressure for elevation
-int myHeading = 0;                  // Compass azimuth
+float myX = 0.0, myY = 0.0;
+float myPressure = 0.0;
+int myHeading = 0;
 
-// --- Friend Tracking Structure ---
+// --- Friends ---
 struct FriendData {
-  float x, y;       // Friend's position
-  float pressure;   // Friend's elevation estimate
-  std::string id;   // Device name/ID
+  float x, y;
+  float pressure;
+  std::string id;
 };
-std::vector<FriendData> friends;    // Stores friends' data
+std::vector<FriendData> friends;
 
-// --- Timing Variables ---
+// --- Timing ---
 int blinkState = 0;
 unsigned long lastBlink = 0;
-const int scanInterval = 500;       // BLE scan every 500ms
+const int scanInterval = 500;
 unsigned long lastScanTime = 0;
+const int aloneBlinkSpeed = 700;
 
-// --- Helper: Degrees to Radians ---
-float degToRad(float d) { return d * 3.1415926 / 180.0; }
-
-// --- LED Matrix Initialization ---
-void setupDisplay() {
-  lc.shutdown(0, false);
-  lc.setIntensity(0, 8);
-  lc.clearDisplay(0);
+// --- Helpers ---
+float degToRad(float d) {
+  return d * 3.1415926 / 180.0;
 }
 
-// --- Map Friend Locations to LED Grid ---
+void setupDisplay() {
+  lc.begin();
+  lc.control(MD_MAX72XX::INTENSITY, 8);
+  lc.clear();
+}
+
+// --- Visualize Friends ---
 void setDisplayPatternMulti(float myHeading, float myPressure) {
-  lc.clearDisplay(0);
+  lc.clear();
   unsigned long now = millis();
+
+  if (friends.empty()) {
+    if (now - lastBlink > aloneBlinkSpeed) {
+      blinkState = !blinkState;
+      lastBlink = now;
+    }
+    if (blinkState) {
+      lc.setPoint(3, 3, true);
+      lc.setPoint(3, 4, true);
+      lc.setPoint(4, 3, true);
+      lc.setPoint(4, 4, true);
+    }
+    Serial.println("🔕 No friends detected. Showing center blink.");
+    return;
+  }
 
   for (const auto& f : friends) {
     float dx = f.x - myX;
     float dy = f.y - myY;
-    float distance = sqrt(dx * dx + dy * dy);  // Euclidean distance
+    float distance = sqrt(dx * dx + dy * dy);
 
-    float angleToFriend = atan2(dy, dx) * 180.0 / 3.1415926;  // Convert to degrees
-    float angleOffset = fmod((angleToFriend - myHeading + 360), 360);  // Relative direction
-    float angleRad = degToRad(angleOffset);  // Convert to radians for trig
+    float angleToFriend = atan2(dy, dx) * 180.0 / 3.1415926;
+    float angleOffset = fmod((angleToFriend - myHeading + 360), 360);
+    float angleRad = degToRad(angleOffset);
 
-    float pressureDiff = myPressure - f.pressure;  // Relative elevation
+    float pressureDiff = myPressure - f.pressure;
 
-    // Determine radial ring based on distance
     int radius = 0;
-    if (distance <= 4) radius = 1;
+    if (distance <= 5) radius = 1;
     else if (distance <= 10) radius = 2;
     else if (distance <= 20) radius = 3;
     else if (distance <= 50) radius = 4;
-    else continue;  // Too far, ignore
+    else continue;
 
-    // Calculate matrix coordinates
     int centerX = 3, centerY = 3;
     int x = centerX + round(radius * cos(angleRad));
-    int y = centerY - round(radius * sin(angleRad));  // Y-axis is inverted
+    int y = centerY - round(radius * sin(angleRad));
 
-    if (x < 0 || x > 7 || y < 0 || y > 7) continue;  // Skip invalid pixels
+    if (x < 0 || x > 7 || y < 0 || y > 7) continue;
 
-    // Blinking logic based on elevation difference
-    bool shouldBlink = abs(pressureDiff) >= 0.5;  // Blinking = different floor
-    int blinkSpeed = pressureDiff > 0 ? 1000 : 250;  // Above = slow, below = fast
+    bool shouldBlink = abs(pressureDiff) >= 0.5;
+    int blinkSpeed = pressureDiff > 0 ? 1000 : 250;
+
     if (!shouldBlink || (now - lastBlink > blinkSpeed)) {
       blinkState = !blinkState;
       lastBlink = now;
     }
 
     if (!shouldBlink || blinkState) {
-      lc.setLed(0, y, x, true);  // Turn on pixel
+      lc.setPoint(y, x, true);
     }
+
+    Serial.print("📍 Friend ");
+    Serial.print(f.id.c_str());
+    Serial.print(" at (");
+    Serial.print(f.x);
+    Serial.print(", ");
+    Serial.print(f.y);
+    Serial.print("), distance: ");
+    Serial.print(distance);
+    Serial.print(", pressureDiff: ");
+    Serial.println(pressureDiff);
   }
 }
 
-// --- BLE Scan Callback: Process incoming friend data ---
-class AdvertisedDeviceCallbacks : public NimBLEAdvertisedDeviceCallbacks {
+// --- BLE Scan Callback ---
+class MyScanCallbacks : public NimBLEScanCallbacks {
   void onResult(NimBLEAdvertisedDevice* advertisedDevice) {
     if (advertisedDevice->haveName() && advertisedDevice->haveManufacturerData()) {
       std::string name = advertisedDevice->getName();
-      if (name.find("pulse") != std::string::npos && name != myID) {
-        std::string data = advertisedDevice->getManufacturerData();
-        float values[3];  // x, y, pressure
-        memcpy(values, data.data(), sizeof(values));
+      if (name.find("pulse") == std::string::npos || name == myID) return;
 
-        FriendData fd;
-        fd.x = values[0];
-        fd.y = values[1];
-        fd.pressure = values[2];
-        fd.id = name;
+      std::string data = advertisedDevice->getManufacturerData();
+      if (data.length() < 4 + sizeof(float) * 3) return;
 
-        // Update friend if already exists
-        bool exists = false;
-        for (auto& f : friends) {
-          if (f.id == fd.id) {
-            f = fd;
-            exists = true;
-            break;
-          }
+      if (data.substr(0, 4) != "PLNK") return;
+
+      float values[3];
+      memcpy(values, data.data() + 4, sizeof(values));
+
+      FriendData fd;
+      fd.x = values[0];
+      fd.y = values[1];
+      fd.pressure = values[2];
+      fd.id = name;
+
+      bool exists = false;
+      for (auto& f : friends) {
+        if (f.id == fd.id) {
+          f = fd;
+          exists = true;
+          break;
         }
-        if (!exists) friends.push_back(fd);  // Otherwise, add new
       }
+      if (!exists) friends.push_back(fd);
+
+      Serial.print("✅ Received from ");
+      Serial.print(fd.id.c_str());
+      Serial.print(": x=");
+      Serial.print(fd.x);
+      Serial.print(", y=");
+      Serial.print(fd.y);
+      Serial.print(", pressure=");
+      Serial.println(fd.pressure);
     }
   }
 };
 
-// --- BLE Advertising Setup ---
+// --- BLE Setup ---
 void setupBLE() {
   NimBLEDevice::init(myID);
   NimBLEServer* pServer = NimBLEDevice::createServer();
-  pAdvertising = NimBLEDevice::getAdvertising();
-  pAdvertising->setScanResponse(false);
-  pAdvertising->setMinPreferred(0x06);
-  pAdvertising->setMaxPreferred(0x12);
+  pAdvertising = pServer->getAdvertising();
   pAdvertising->start();
 }
 
-// --- Send self (x, y, pressure) as BLE manufacturer data ---
+// --- Broadcast Self Data ---
 void updateAdvertisement(float x, float y, float pressure) {
+  const char* key = "PLNK";
   float payload[3] = {x, y, pressure};
-  std::string out((char*)payload, sizeof(payload));
+  std::string out(key, 4);
+  out.append((char*)payload, sizeof(payload));
   pAdvertising->setManufacturerData(out);
   pAdvertising->start();
+
+  Serial.print("📡 Advertising: x=");
+  Serial.print(x);
+  Serial.print(", y=");
+  Serial.print(y);
+  Serial.print(", pressure=");
+  Serial.println(pressure);
 }
 
-// --- Initialization ---
+// --- Setup ---
 void setup() {
   Serial.begin(115200);
+  Serial.println("✅ PulseLink booted successfully!");
   setupDisplay();
   Wire.begin();
 
-  // Initialize sensors
   if (!bme.begin(0x76)) {
-    Serial.println("Could not find BME280 sensor!");
+    Serial.println("❌ Could not find BME280 sensor!");
     while (1);
   }
-  compass.init();
-  compass.setCalibration(-263, 608, -369, 388, -584, 149);  // Adjust if needed
 
-  // Set fixed position for test/demo
+  compass.init();
+  compass.setCalibration(-263, 608, -369, 388, -584, 149);
+
   if (strcmp(myID, "pulseA") == 0) {
     myX = 0.0;
     myY = 0.0;
@@ -166,28 +211,34 @@ void setup() {
     myY = 3.0;
   }
 
-  // Setup BLE scanning and advertising
   setupBLE();
-  NimBLEDevice::getScan()->setAdvertisedDeviceCallbacks(new AdvertisedDeviceCallbacks());
-  NimBLEDevice::getScan()->setActiveScan(true);
-  NimBLEDevice::getScan()->start(0, nullptr, false);
+  NimBLEScan* pScan = NimBLEDevice::getScan();
+  pScan->setScanCallbacks(new MyScanCallbacks());
+  pScan->setActiveScan(true);
+  pScan->start(scanInterval / 1000);
+
+  Serial.println("✅ Setup complete. Starting scan...");
 }
 
-// --- Main Loop ---
+// --- Loop ---
 void loop() {
-  myPressure = bme.readPressure();  // Measure elevation
+  myPressure = bme.readPressure();
   compass.read();
-  myHeading = compass.getAzimuth();  // Get compass direction
-  updateAdvertisement(myX, myY, myPressure);  // Broadcast current data
+  myHeading = compass.getAzimuth();
 
-  // BLE scan every scanInterval ms
+  Serial.print("🧭 Heading: ");
+  Serial.print(myHeading);
+  Serial.print("°, Pressure: ");
+  Serial.println(myPressure);
+
+  updateAdvertisement(myX, myY, myPressure);
+
   if (millis() - lastScanTime > scanInterval) {
     NimBLEDevice::getScan()->clearResults();
-    NimBLEDevice::getScan()->start(0, nullptr, false);
+    NimBLEDevice::getScan()->start(scanInterval / 1000);
     lastScanTime = millis();
   }
 
-  // Update the matrix based on received data
   setDisplayPatternMulti(myHeading, myPressure);
-  delay(50);  // Small delay for stability
+  delay(50);
 }
