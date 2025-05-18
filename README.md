@@ -4,13 +4,13 @@
 
 ---
 
-## 🔍 Overview
+## Overview
 
 **PulseLink** is a wearable device designed to help individuals locate friends in crowded environments such as festivals, fraternity houses, and parties. The system displays directional and proximity-based feedback using an 8×8 LED matrix, enabling users to navigate toward friends even across multiple floors.
 
 ---
 
-## 🧠 How It Works
+## How It Works
 
 Each PulseLink device is powered by an ESP32 microcontroller with the following integrated components:
 
@@ -30,7 +30,7 @@ Devices continuously broadcast their `(x, y)` position and air pressure over BLE
 
 ---
 
-## 📦 Hardware Components
+## Hardware Components
 
 - ESP32 Dev Board  
 - 8×8 MAX7219 LED Matrix  
@@ -41,14 +41,14 @@ Devices continuously broadcast their `(x, y)` position and air pressure over BLE
 
 ---
 
-## 📐 Coordinate System
+## Coordinate System
 
 - One device (e.g., `pulseA`) is fixed at origin `(0, 0)`
 - Other devices are positioned relative to this origin (e.g., `(5, 3)`)
 - Compass adjusts display orientation to match real-world heading
 - BLE signal is only accepted from other `pulseX` devices to avoid interference
 
----
+<!-- ---
 
 ## 🧰 Setup & Programming
 
@@ -73,4 +73,4 @@ Upload the `PulseLink ESP32 Code` using the Arduino IDE. Make sure:
 
 Edit the line:
 ```cpp
-const char* myID = "pulseA";
+const char* myID = "pulseA"; -->
