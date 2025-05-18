@@ -1,13 +1,14 @@
 #include <NimBLEDevice.h>
 #include <vector>
 #include <string>
+#include <cmath>
 
 // --- BLE Identity ---
-const char* myID = "pulseA";  // Change to "pulseB" on second device
+const char* myID = "pulseA";  // Use unique names per device
 BLEAdvertising* pAdvertising;
 
-// --- Position ---
-float myX = 0.0, myY = 0.0;  // Simulated position
+// --- Self Position (update dynamically if needed) ---
+float myX = 0.0, myY = 0.0;  // Update these if your device moves
 
 // --- Friends ---
 struct FriendData {
@@ -15,6 +16,11 @@ struct FriendData {
   std::string id;
 };
 std::vector<FriendData> friends;
+
+// --- Distance calculation ---
+float calcDistance(float x1, float y1, float x2, float y2) {
+  return sqrt(pow(x2 - x1, 2) + pow(y2 - y1, 2));
+}
 
 // --- BLE Scan Callback ---
 class MyScanCallbacks : public NimBLEScanCallbacks {
@@ -38,19 +44,28 @@ class MyScanCallbacks : public NimBLEScanCallbacks {
       bool exists = false;
       for (auto& f : friends) {
         if (f.id == fd.id) {
-          f = fd;
+          f = fd;  // update
           exists = true;
           break;
         }
       }
-      if (!exists) friends.push_back(fd);
+      if (!exists) {
+        friends.push_back(fd);
+        Serial.print("🆕 New friend detected: ");
+      } else {
+        Serial.print("🔁 Friend updated: ");
+      }
 
-      Serial.print("✅ Received from ");
+      float dist = calcDistance(myX, myY, fd.x, fd.y);
+
       Serial.print(fd.id.c_str());
-      Serial.print(": x=");
+      Serial.print(" at (");
       Serial.print(fd.x);
-      Serial.print(", y=");
-      Serial.println(fd.y);
+      Serial.print(", ");
+      Serial.print(fd.y);
+      Serial.print(") — Distance: ");
+      Serial.print(dist);
+      Serial.println(" units");
     }
   }
 };
@@ -66,7 +81,7 @@ void setupBLE() {
 
 void updateAdvertisement(float x, float y) {
   const char* key = "PLNK";
-  float payload[3] = {x, y, 0.0};  // Z/elevation not used
+  float payload[3] = {x, y, 0.0};  // You can repurpose z if needed later
   std::string out(key, 4);
   out.append((char*)payload, sizeof(payload));
   pAdvertising->setManufacturerData(out);
@@ -82,20 +97,13 @@ void updateAdvertisement(float x, float y) {
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println("✅ BLE-only test booted.");
+  Serial.println("✅ BLE distance tracker booted.");
 
-  // Set fixed positions
-  if (strcmp(myID, "pulseA") == 0) {
-    myX = 0.0;
-    myY = 0.0;
-  } else {
-    myX = 5.0;
-    myY = 3.0;
-  }
+  // OPTIONAL: If testing movement, simulate changing positions
+  // (for now, we assume myX, myY stays static unless updated)
 
   setupBLE();
 
-  // Set up scanner
   NimBLEScan* pScan = NimBLEDevice::getScan();
   pScan->setScanCallbacks(new MyScanCallbacks());
   pScan->setActiveScan(true);
@@ -113,7 +121,7 @@ void loop() {
 
   updateAdvertisement(myX, myY);
 
-  // Optional: clear results every 5s
+  // Optional: periodically clear results to avoid stale data
   static unsigned long lastScanClear = 0;
   if (millis() - lastScanClear > 5000) {
     NimBLEDevice::getScan()->clearResults();
@@ -121,5 +129,5 @@ void loop() {
     Serial.println("♻️ Cleared scan results.");
   }
 
-  delay(1000);  // loop delay
+  delay(1000);
 }
