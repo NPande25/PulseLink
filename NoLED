@@ -1,0 +1,125 @@
+#include <NimBLEDevice.h>
+#include <vector>
+#include <string>
+
+// --- BLE Identity ---
+const char* myID = "pulseA";  // Change to "pulseB" on second device
+BLEAdvertising* pAdvertising;
+
+// --- Position ---
+float myX = 0.0, myY = 0.0;  // Simulated position
+
+// --- Friends ---
+struct FriendData {
+  float x, y;
+  std::string id;
+};
+std::vector<FriendData> friends;
+
+// --- BLE Scan Callback ---
+class MyScanCallbacks : public NimBLEScanCallbacks {
+  void onResult(NimBLEAdvertisedDevice* advertisedDevice) {
+    if (advertisedDevice->haveName() && advertisedDevice->haveManufacturerData()) {
+      std::string name = advertisedDevice->getName();
+      if (name.find("pulse") == std::string::npos || name == myID) return;
+
+      std::string data = advertisedDevice->getManufacturerData();
+      if (data.length() < 4 + sizeof(float) * 3) return;
+      if (data.substr(0, 4) != "PLNK") return;
+
+      float values[3];
+      memcpy(values, data.data() + 4, sizeof(values));
+
+      FriendData fd;
+      fd.x = values[0];
+      fd.y = values[1];
+      fd.id = name;
+
+      bool exists = false;
+      for (auto& f : friends) {
+        if (f.id == fd.id) {
+          f = fd;
+          exists = true;
+          break;
+        }
+      }
+      if (!exists) friends.push_back(fd);
+
+      Serial.print("✅ Received from ");
+      Serial.print(fd.id.c_str());
+      Serial.print(": x=");
+      Serial.print(fd.x);
+      Serial.print(", y=");
+      Serial.println(fd.y);
+    }
+  }
+};
+
+// --- BLE Setup ---
+void setupBLE() {
+  NimBLEDevice::init(myID);
+  NimBLEServer* pServer = NimBLEDevice::createServer();
+  pAdvertising = pServer->getAdvertising();
+  pAdvertising->start();
+  Serial.println("📡 BLE advertising started.");
+}
+
+void updateAdvertisement(float x, float y) {
+  const char* key = "PLNK";
+  float payload[3] = {x, y, 0.0};  // Z/elevation not used
+  std::string out(key, 4);
+  out.append((char*)payload, sizeof(payload));
+  pAdvertising->setManufacturerData(out);
+  pAdvertising->start();
+
+  Serial.print("📡 Broadcasting: x=");
+  Serial.print(x);
+  Serial.print(", y=");
+  Serial.println(y);
+}
+
+// --- Setup ---
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println("✅ BLE-only test booted.");
+
+  // Set fixed positions
+  if (strcmp(myID, "pulseA") == 0) {
+    myX = 0.0;
+    myY = 0.0;
+  } else {
+    myX = 5.0;
+    myY = 3.0;
+  }
+
+  setupBLE();
+
+  // Set up scanner
+  NimBLEScan* pScan = NimBLEDevice::getScan();
+  pScan->setScanCallbacks(new MyScanCallbacks());
+  pScan->setActiveScan(true);
+  Serial.println("🔍 BLE scan prepared.");
+}
+
+// --- Loop ---
+void loop() {
+  static bool scanStarted = false;
+  if (!scanStarted) {
+    NimBLEDevice::getScan()->start(1, false);  // non-blocking
+    Serial.println("🔍 BLE scan started.");
+    scanStarted = true;
+  }
+
+  updateAdvertisement(myX, myY);
+
+  // Optional: clear results every 5s
+  static unsigned long lastScanClear = 0;
+  if (millis() - lastScanClear > 5000) {
+    NimBLEDevice::getScan()->clearResults();
+    lastScanClear = millis();
+    Serial.println("♻️ Cleared scan results.");
+  }
+
+  delay(1000);  // loop delay
+}
