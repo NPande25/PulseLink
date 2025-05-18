@@ -50,7 +50,7 @@ Devices continuously broadcast their `(x, y)` position and air pressure over BLE
 
 <!-- ---
 
-## 🧰 Setup & Programming
+## Setup & Programming
 
 ### 1. Wiring
 
@@ -74,3 +74,49 @@ Upload the `PulseLink ESP32 Code` using the Arduino IDE. Make sure:
 Edit the line:
 ```cpp
 const char* myID = "pulseA"; -->
+
+to assign unique IDs (pulseB, pulseC, etc.) and update (x, y) coordinates in setup() accordingly.
+
+
+## Status Indicators on LED Matrix
+
+- **Solid dot** = friend on same floor  
+- **Fast blink** = friend is below  
+- **Slow blink** = friend is above  
+- **Dot location** = rotated relative to user’s heading  
+
+---
+
+## BLE Communication
+
+- Devices scan and advertise every 500 ms  
+- Only devices whose name begins with `"pulse"` are accepted  
+- Data exchanged includes:
+  - `x` coordinate (float)  
+  - `y` coordinate (float)  
+  - `pressure` (float)  
+
+---
+
+## Limitations & Future Work
+
+- BLE range ~30m indoors; performance varies by environment  
+- Elevation estimates rely on indoor air pressure, which can drift  
+- Currently uses fixed positions — GPS, UWB, or movement tracking could enhance dynamic navigation  
+
+---
+
+## Demo & Testing
+
+PulseLink prototypes have been tested indoors with multiple ESP32 boards and display clear directional feedback in real time. Multi-floor testing was simulated using pressure differentials.
+
+---
+
+## Files
+
+- `PulseLink_ESP32_Code.ino` – main firmware  
+- `README.md` – documentation  
+
+---
+
+
