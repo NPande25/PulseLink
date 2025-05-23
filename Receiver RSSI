@@ -1,36 +1,45 @@
-#include <esp_now.h>
-#include <WiFi.h>
-
-uint8_t senderMAC[] = {0x5C, 0x01, 0x3B, 0x74, 0x46, 0x34};
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEScan.h>
+#include <BLEAdvertisedDevice.h>
 
 double getDistance(int rssi) {
-  int txPower = -59;  // Calibrate this for your boards
+  int txPower = -59;  // RSSI at 1 meter (adjust after calibration)
   double n = 2.0;     // Path-loss exponent
   return pow(10.0, (txPower - rssi) / (10.0 * n));
 }
 
-void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
-  int rssi = WiFi.RSSI();
-  Serial.print("RSSI from sender: ");
-  Serial.print(rssi);
-  Serial.print(" dBm, Estimated distance: ");
-  Serial.print(getDistance(rssi));
-  Serial.println(" meters");
-}
+// Target MAC address to track
+const char* targetMAC = "5c:01:3b:74:46:34";
+
+class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
+  void onResult(BLEAdvertisedDevice advertisedDevice) {
+    String mac = advertisedDevice.getAddress().toString().c_str();
+    int rssi = advertisedDevice.getRSSI();
+
+    if (mac.equalsIgnoreCase(targetMAC)) {
+      Serial.print("Found target MAC ");
+      Serial.print(mac);
+      Serial.print(" | RSSI: ");
+      Serial.print(rssi);
+      Serial.print(" dBm | Estimated Distance: ");
+      Serial.print(getDistance(rssi));
+      Serial.println(" meters");
+    }
+  }
+};
+
+BLEScan* scanner;
 
 void setup() {
   Serial.begin(115200);
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-
-  if (esp_now_init() != ESP_OK) {
-    Serial.println("Error initializing ESP-NOW");
-    return;
-  }
-
-  esp_now_register_recv_cb(OnDataRecv);
+  BLEDevice::init("");
+  scanner = BLEDevice::getScan();
+  scanner->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
+  scanner->setActiveScan(true);  // Get RSSI and more data
+  scanner->start(5, false);      // Scan for 5 seconds
 }
 
 void loop() {
-  delay(2000);
+  scanner->start(5, false);  // Restart scanning every 5 seconds
 }
