@@ -1,0 +1,36 @@
+#include <esp_now.h>
+#include <WiFi.h>
+
+uint8_t senderMAC[] = {0x5C, 0x01, 0x3B, 0x74, 0x46, 0x34};
+
+double getDistance(int rssi) {
+  int txPower = -59;  // Calibrate this for your boards
+  double n = 2.0;     // Path-loss exponent
+  return pow(10.0, (txPower - rssi) / (10.0 * n));
+}
+
+void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
+  int rssi = WiFi.RSSI();
+  Serial.print("RSSI from sender: ");
+  Serial.print(rssi);
+  Serial.print(" dBm, Estimated distance: ");
+  Serial.print(getDistance(rssi));
+  Serial.println(" meters");
+}
+
+void setup() {
+  Serial.begin(115200);
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Error initializing ESP-NOW");
+    return;
+  }
+
+  esp_now_register_recv_cb(OnDataRecv);
+}
+
+void loop() {
+  delay(2000);
+}
