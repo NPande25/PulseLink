@@ -1,0 +1,114 @@
+// =========================
+// DEVICE 2 (Friend Device)
+// =========================
+
+#include <esp_now.h>
+#include <WiFi.h>
+#include <math.h>
+
+#define DEVICE_ID 2
+const char* ROLE = "BEACON";
+
+// MACs
+uint8_t device1_mac[6] = {0x5C, 0x01, 0x3B, 0x74, 0x46, 0x34};
+uint8_t anchor3_mac[6] = {0x5C, 0x01, 0x3B, 0x74, 0x7A, 0x44};
+uint8_t anchor4_mac[6] = {0x5C, 0x01, 0x3B, 0x74, 0x6C, 0x04};
+uint8_t anchor5_mac[6] = {0x5C, 0x01, 0x3B, 0x72, 0x6B, 0xE0};
+
+// Anchor coordinates
+const float anchor3_x = 0.0, anchor3_y = 0.0;
+const float anchor4_x = 0.0, anchor4_y = 3.0;
+const float anchor5_x = 3.0, anchor5_y = 10.0;
+
+// Distance and position tracking
+float d3 = -1, d4 = -1, d5 = -1;
+float estimated_x = 0.0, estimated_y = 0.0;
+
+// Message structure
+typedef struct struct_message {
+  char device_type[20];
+  int device_id;
+  unsigned long timestamp;
+  int tx_power;
+  float x;
+  float y;
+} struct_message;
+
+struct_message outgoing_msg;
+struct_message incoming_msg;
+
+// RSSI-to-distance based on linear interpolation
+float distanceFromRSSI(int rssi) {
+  int abs_rssi = abs(rssi);
+  if (abs_rssi <= 0) return 0.0;
+  else if (abs_rssi <= 40) return abs_rssi * (1.0 / 40.0);
+  else if (abs_rssi <= 60) return 1.0 + (abs_rssi - 40) * (2.0 / 20.0);
+  else if (abs_rssi <= 75) return 3.0 + (abs_rssi - 60) * (4.0 / 15.0);
+  else if (abs_rssi <= 85) return 7.0 + (abs_rssi - 75) * (3.0 / 10.0);
+  else return 10.0 + (abs_rssi - 85) * 0.3;
+}
+
+void trilaterate(float d1, float d2, float d3) {
+  float x = (anchor3_x + anchor4_x + anchor5_x) / 3.0;
+  float y = (anchor3_y + anchor4_y + anchor5_y) / 3.0;
+  float lr = 0.01;
+  int steps = 100;
+  for (int i = 0; i < steps; i++) {
+    float dx1 = x - anchor3_x, dy1 = y - anchor3_y, dist1 = sqrt(dx1*dx1 + dy1*dy1);
+    float dx2 = x - anchor4_x, dy2 = y - anchor4_y, dist2 = sqrt(dx2*dx2 + dy2*dy2);
+    float dx3 = x - anchor5_x, dy3 = y - anchor5_y, dist3 = sqrt(dx3*dx3 + dy3*dy3);
+    float gx = (dist1 - d1)*(dx1/(dist1+1e-6)) + (dist2 - d2)*(dx2/(dist2+1e-6)) + (dist3 - d3)*(dx3/(dist3+1e-6));
+    float gy = (dist1 - d1)*(dy1/(dist1+1e-6)) + (dist2 - d2)*(dy2/(dist2+1e-6)) + (dist3 - d3)*(dy3/(dist3+1e-6));
+    x -= lr * gx;
+    y -= lr * gy;
+  }
+  estimated_x = x;
+  estimated_y = y;
+  Serial.printf("📍 Device 2 Position: (%.2f, %.2f)\n", x, y);
+}
+
+void OnDataRecv(const esp_now_recv_info *info, const uint8_t *data, int len) {
+  memcpy(&incoming_msg, data, sizeof(incoming_msg));
+  int rssi = info->rx_ctrl->rssi;
+
+  if (memcmp(info->src_addr, anchor3_mac, 6) == 0) d3 = distanceFromRSSI(rssi);
+  else if (memcmp(info->src_addr, anchor4_mac, 6) == 0) d4 = distanceFromRSSI(rssi);
+  else if (memcmp(info->src_addr, anchor5_mac, 6) == 0) d5 = distanceFromRSSI(rssi);
+  else if (incoming_msg.device_id == 1) {
+    Serial.printf("📨 Position from Device 1: (%.2f, %.2f)\n", incoming_msg.x, incoming_msg.y);
+  }
+
+  if (d3 > 0 && d4 > 0 && d5 > 0) {
+    trilaterate(d3, d4, d5);
+    d3 = d4 = d5 = -1;
+  }
+}
+
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {}
+
+void setup() {
+  Serial.begin(115200);
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);
+  esp_now_init();
+  esp_now_register_recv_cb(OnDataRecv);
+  esp_now_register_send_cb(OnDataSent);
+
+  esp_now_peer_info_t peer = {};
+  memcpy(peer.peer_addr, device1_mac, 6);
+  peer.channel = 0;
+  peer.encrypt = false;
+  esp_now_add_peer(&peer);
+}
+
+void loop() {
+  outgoing_msg.device_id = DEVICE_ID;
+  outgoing_msg.timestamp = millis();
+  outgoing_msg.tx_power = 19;
+  outgoing_msg.x = estimated_x;
+  outgoing_msg.y = estimated_y;
+
+  esp_now_send(device1_mac, (uint8_t*)&outgoing_msg, sizeof(outgoing_msg));
+  delay(1000);
+}
