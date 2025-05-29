@@ -49,14 +49,27 @@ struct_message outgoing_msg;
 struct_message incoming_msg;
 
 float distanceFromRSSI(float rssi, int anchor) {
-  float A = 54.0;
-  float n = 2.2;
-  if (anchor == 3) { A = 54.0; n = 2.2; }
-  else if (anchor == 4) { A = 52.0; n = 2.0; }
-  else if (anchor == 5) { A = 57.0; n = 2.3; }
-  if (rssi == 0) return -1.0;
-  float ratio = (A - rssi) / (10.0 * n);
-  return pow(10.0, ratio);
+  // Ensure RSSI is negative
+  if (rssi >= 0) return -1.0;
+
+  // Piecewise interpolation based on your table
+  if (rssi > -58) {
+    // Between -47 and -58 → 1 to 3 meters
+    return 1.0 + ((-rssi - 47.0) / (58.0 - 47.0)) * (3.0 - 1.0);
+  } else if (rssi > -60) {
+    // Between -58 and -60 → 3 to 5 meters
+    return 3.0 + ((-rssi - 58.0) / (60.0 - 58.0)) * (5.0 - 3.0);
+  } else if (rssi > -66) {
+    // Between -60 and -66 → 5 to 7 meters
+    return 5.0 + ((-rssi - 60.0) / (66.0 - 60.0)) * (7.0 - 5.0);
+  } else if (rssi > -76) {
+    // Between -66 and -76 → 7 to 10 meters
+    return 7.0 + ((-rssi - 66.0) / (76.0 - 66.0)) * (10.0 - 7.0);
+  } else {
+    // Beyond -76 → extend linearly from last segment slope
+    float slope = (10.0 - 7.0) / (76.0 - 66.0);  // = 0.3 meters per dBm
+    return 10.0 + ((-rssi - 76.0) * slope);     // extrapolate beyond 10m
+  }
 }
 
 // === Trilateration ===
