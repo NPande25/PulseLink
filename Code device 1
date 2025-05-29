@@ -1,30 +1,52 @@
-// =========================
-// DEVICE 1 (Your Device)
-// =========================
-
 #include <esp_now.h>
 #include <WiFi.h>
 #include <math.h>
+#include <MD_MAX72xx.h>
+#include <SPI.h>
 
 #define DEVICE_ID 1
 const char* ROLE = "SCANNER";
 
-// MACs
+// === LED MATRIX CONFIG ===
+#define HARDWARE_TYPE MD_MAX72XX::FC16_HW
+#define MAX_DEVICES 1
+#define DATA_PIN 23
+#define CLK_PIN 18
+#define CS_PIN 5
+MD_MAX72XX matrix = MD_MAX72XX(HARDWARE_TYPE, DATA_PIN, CLK_PIN, CS_PIN);
+
+// === MAC ADDRESSES ===
 uint8_t device2_mac[6] = {0x5C, 0x01, 0x3B, 0x74, 0x74, 0x1C};
 uint8_t anchor3_mac[6] = {0x5C, 0x01, 0x3B, 0x74, 0x7A, 0x44};
 uint8_t anchor4_mac[6] = {0x5C, 0x01, 0x3B, 0x74, 0x6C, 0x04};
 uint8_t anchor5_mac[6] = {0x5C, 0x01, 0x3B, 0x72, 0x6B, 0xE0};
 
-// Anchor coordinates
-const float anchor3_x = 0.0, anchor3_y = 0.0;
-const float anchor4_x = 0.0, anchor4_y = 3.0;
-const float anchor5_x = 3.0, anchor5_y = 10.0;
+// === Anchor Coordinates ===
+const float anchor3_x = 3.0, anchor3_y = 15.0;
+const float anchor4_x = 15.0, anchor4_y = 6.0;
+const float anchor5_x = 3.0, anchor5_y = 6.0;
 
-// Distance and position tracking
+// === Distance and Position ===
 float d3 = -1, d4 = -1, d5 = -1;
 float estimated_x = 0.0, estimated_y = 0.0;
+float device2_x = -1, device2_y = -1;
 
-// Message structure
+// === RSSI Buffer Config ===
+#define RSSI_HISTORY_SIZE 5
+int rssi3_history[RSSI_HISTORY_SIZE] = {-70, -70, -70, -70, -70};
+int rssi4_history[RSSI_HISTORY_SIZE] = {-70, -70, -70, -70, -70};
+int rssi5_history[RSSI_HISTORY_SIZE] = {-70, -70, -70, -70, -70};
+int index3 = 0, index4 = 0, index5 = 0;
+
+float averageRSSI(int* buffer) {
+  float sum = 0;
+  for (int i = 0; i < RSSI_HISTORY_SIZE; i++) {
+    sum += buffer[i];
+  }
+  return sum / RSSI_HISTORY_SIZE;
+}
+
+// === Message Structure ===
 typedef struct struct_message {
   char device_type[20];
   int device_id;
@@ -37,8 +59,8 @@ typedef struct struct_message {
 struct_message outgoing_msg;
 struct_message incoming_msg;
 
-// RSSI-to-distance based on linear interpolation
-float distanceFromRSSI(int rssi) {
+// === RSSI-to-Distance Conversion ===
+float distanceFromRSSI(float rssi) {
   int abs_rssi = abs(rssi);
   if (abs_rssi <= 0) return 0.0;
   else if (abs_rssi <= 40) return abs_rssi * (1.0 / 40.0);
@@ -48,6 +70,7 @@ float distanceFromRSSI(int rssi) {
   else return 10.0 + (abs_rssi - 85) * 0.3;
 }
 
+// === Trilateration ===
 void trilaterate(float d1, float d2, float d3) {
   float x = (anchor3_x + anchor4_x + anchor5_x) / 3.0;
   float y = (anchor3_y + anchor4_y + anchor5_y) / 3.0;
@@ -67,15 +90,69 @@ void trilaterate(float d1, float d2, float d3) {
   Serial.printf("📍 Device 1 Position: (%.2f, %.2f)\n", x, y);
 }
 
+// === LED Visual Display ===
+void displayRelativePosition(float x1, float y1, float x2, float y2) {
+  matrix.clear();
+
+  float dx = x2 - x1;
+  float dy = y2 - y1;
+  float distance = sqrt(dx * dx + dy * dy);
+  float angle = atan2(dy, dx);  // radians, from -π to π
+
+  int radius;
+  if (distance <= 3.0) radius = 1;
+  else if (distance <= 6.0) radius = 2;
+  else if (distance <= 10.0) radius = 3;
+  else radius = 4;
+
+  int center_x = 4;
+  int center_y = 4;
+
+  float step_size = radius * 1.0;
+  int x = round(center_x + step_size * cos(angle));
+  int y = round(center_y - step_size * sin(angle));  // y-axis is inverted
+
+  x = constrain(x, 0, 7);
+  y = constrain(y, 0, 7);
+
+  matrix.setPoint(y, x, true);  // (row, col)
+  matrix.update();
+
+  Serial.printf("📍 Device 2 Position: (%.2f, %.2f)\n", x2, y2);
+  Serial.printf("📡 Relative pos (dx=%.2f, dy=%.2f) → angle %.2f°, radius %d → LED (%d, %d)\n",
+                dx, dy, angle * 180.0 / PI, radius, y, x);
+}
+
+// === ESP-NOW Callback ===
 void OnDataRecv(const esp_now_recv_info *info, const uint8_t *data, int len) {
   memcpy(&incoming_msg, data, sizeof(incoming_msg));
   int rssi = info->rx_ctrl->rssi;
 
-  if (memcmp(info->src_addr, anchor3_mac, 6) == 0) d3 = distanceFromRSSI(rssi);
-  else if (memcmp(info->src_addr, anchor4_mac, 6) == 0) d4 = distanceFromRSSI(rssi);
-  else if (memcmp(info->src_addr, anchor5_mac, 6) == 0) d5 = distanceFromRSSI(rssi);
+  if (memcmp(info->src_addr, anchor3_mac, 6) == 0) {
+    rssi3_history[index3] = rssi;
+    index3 = (index3 + 1) % RSSI_HISTORY_SIZE;
+    float avg_rssi = averageRSSI(rssi3_history);
+    d3 = distanceFromRSSI(avg_rssi);
+    Serial.printf("📶 Anchor 3 RSSI: %d dBm → Avg: %.2f → Distance: %.2f meters\n", rssi, avg_rssi, d3);
+  }
+  else if (memcmp(info->src_addr, anchor4_mac, 6) == 0) {
+    rssi4_history[index4] = rssi;
+    index4 = (index4 + 1) % RSSI_HISTORY_SIZE;
+    float avg_rssi = averageRSSI(rssi4_history);
+    d4 = distanceFromRSSI(avg_rssi);
+    Serial.printf("📶 Anchor 4 RSSI: %d dBm → Avg: %.2f → Distance: %.2f meters\n", rssi, avg_rssi, d4);
+  }
+  else if (memcmp(info->src_addr, anchor5_mac, 6) == 0) {
+    rssi5_history[index5] = rssi;
+    index5 = (index5 + 1) % RSSI_HISTORY_SIZE;
+    float avg_rssi = averageRSSI(rssi5_history);
+    d5 = distanceFromRSSI(avg_rssi);
+    Serial.printf("📶 Anchor 5 RSSI: %d dBm → Avg: %.2f → Distance: %.2f meters\n", rssi, avg_rssi, d5);
+  }
   else if (incoming_msg.device_id == 2) {
-    Serial.printf("📨 Position from Device 2: (%.2f, %.2f)\n", incoming_msg.x, incoming_msg.y);
+    device2_x = incoming_msg.x;
+    device2_y = incoming_msg.y;
+    displayRelativePosition(estimated_x, estimated_y, device2_x, device2_y);
   }
 
   if (d3 > 0 && d4 > 0 && d5 > 0) {
@@ -86,6 +163,7 @@ void OnDataRecv(const esp_now_recv_info *info, const uint8_t *data, int len) {
 
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {}
 
+// === Setup ===
 void setup() {
   Serial.begin(115200);
   WiFi.mode(WIFI_STA);
@@ -95,13 +173,20 @@ void setup() {
   esp_now_register_recv_cb(OnDataRecv);
   esp_now_register_send_cb(OnDataSent);
 
+  // Add Device 2 as peer
   esp_now_peer_info_t peer = {};
   memcpy(peer.peer_addr, device2_mac, 6);
   peer.channel = 0;
   peer.encrypt = false;
   esp_now_add_peer(&peer);
+
+  matrix.begin();
+  matrix.clear();
+  matrix.control(MD_MAX72XX::INTENSITY, 5);
+  matrix.update();
 }
 
+// === Loop ===
 void loop() {
   outgoing_msg.device_id = DEVICE_ID;
   outgoing_msg.timestamp = millis();
