@@ -22,9 +22,9 @@ float estimated_x = 0.0, estimated_y = 0.0;
 
 // === RSSI History Buffers ===
 #define RSSI_HISTORY_SIZE 5
-int rssi3_history[RSSI_HISTORY_SIZE] = {0};
-int rssi4_history[RSSI_HISTORY_SIZE] = {0};
-int rssi5_history[RSSI_HISTORY_SIZE] = {0};
+int rssi3_history[RSSI_HISTORY_SIZE] = {-70, -70, -70, -70, -70};
+int rssi4_history[RSSI_HISTORY_SIZE] = {-70, -70, -70, -70, -70};
+int rssi5_history[RSSI_HISTORY_SIZE] = {-70, -70, -70, -70, -70};
 int index3 = 0, index4 = 0, index5 = 0;
 
 float averageRSSI(int* buffer) {
@@ -48,15 +48,15 @@ typedef struct struct_message {
 struct_message outgoing_msg;
 struct_message incoming_msg;
 
-// === RSSI-to-Distance Conversion ===
-float distanceFromRSSI(float rssi) {
-  int abs_rssi = abs(rssi);
-  if (abs_rssi <= 0) return 0.0;
-  else if (abs_rssi <= 40) return abs_rssi * (1.0 / 40.0);
-  else if (abs_rssi <= 60) return 1.0 + (abs_rssi - 40) * (2.0 / 20.0);
-  else if (abs_rssi <= 75) return 3.0 + (abs_rssi - 60) * (4.0 / 15.0);
-  else if (abs_rssi <= 85) return 7.0 + (abs_rssi - 75) * (3.0 / 10.0);
-  else return 10.0 + (abs_rssi - 85) * 0.3;
+float distanceFromRSSI(float rssi, int anchor) {
+  float A = 54.0;
+  float n = 2.2;
+  if (anchor == 3) { A = 54.0; n = 2.2; }
+  else if (anchor == 4) { A = 52.0; n = 2.0; }
+  else if (anchor == 5) { A = 57.0; n = 2.3; }
+  if (rssi == 0) return -1.0;
+  float ratio = (A - rssi) / (10.0 * n);
+  return pow(10.0, ratio);
 }
 
 // === Trilateration ===
@@ -80,10 +80,9 @@ void trilaterate(float d1, float d2, float d3) {
   }
   estimated_x = x;
   estimated_y = y;
-  Serial.printf("📍 Device 2 Position: (%.2f, %.2f)\n", x, y);
+  Serial.printf("\xf0\x9f\x93\x8d Device 2 Position: (%.2f, %.2f)\n", x, y);
 }
 
-// === ESP-NOW Callback ===
 void OnDataRecv(const esp_now_recv_info *info, const uint8_t *data, int len) {
   memcpy(&incoming_msg, data, sizeof(incoming_msg));
   int rssi = info->rx_ctrl->rssi;
@@ -92,22 +91,20 @@ void OnDataRecv(const esp_now_recv_info *info, const uint8_t *data, int len) {
     rssi3_history[index3] = rssi;
     index3 = (index3 + 1) % RSSI_HISTORY_SIZE;
     float avg_rssi = averageRSSI(rssi3_history);
-    d3 = distanceFromRSSI(avg_rssi);
-    Serial.printf("📶 Anchor 3 RSSI: %d dBm → Avg: %.2f → Distance: %.2f meters\n", rssi, avg_rssi, d3);
-  }
-  else if (memcmp(info->src_addr, anchor4_mac, 6) == 0) {
+    d3 = distanceFromRSSI(avg_rssi, 3);
+    Serial.printf("\xf0\x9f\x93\xb6 Anchor 3 RSSI: %d dBm \u2192 Avg: %.2f \u2192 Distance: %.2f meters\n", rssi, avg_rssi, d3);
+  } else if (memcmp(info->src_addr, anchor4_mac, 6) == 0) {
     rssi4_history[index4] = rssi;
     index4 = (index4 + 1) % RSSI_HISTORY_SIZE;
     float avg_rssi = averageRSSI(rssi4_history);
-    d4 = distanceFromRSSI(avg_rssi);
-    Serial.printf("📶 Anchor 4 RSSI: %d dBm → Avg: %.2f → Distance: %.2f meters\n", rssi, avg_rssi, d4);
-  }
-  else if (memcmp(info->src_addr, anchor5_mac, 6) == 0) {
+    d4 = distanceFromRSSI(avg_rssi, 4);
+    Serial.printf("\xf0\x9f\x93\xb6 Anchor 4 RSSI: %d dBm \u2192 Avg: %.2f \u2192 Distance: %.2f meters\n", rssi, avg_rssi, d4);
+  } else if (memcmp(info->src_addr, anchor5_mac, 6) == 0) {
     rssi5_history[index5] = rssi;
     index5 = (index5 + 1) % RSSI_HISTORY_SIZE;
     float avg_rssi = averageRSSI(rssi5_history);
-    d5 = distanceFromRSSI(avg_rssi);
-    Serial.printf("📶 Anchor 5 RSSI: %d dBm → Avg: %.2f → Distance: %.2f meters\n", rssi, avg_rssi, d5);
+    d5 = distanceFromRSSI(avg_rssi, 5);
+    Serial.printf("\xf0\x9f\x93\xb6 Anchor 5 RSSI: %d dBm \u2192 Avg: %.2f \u2192 Distance: %.2f meters\n", rssi, avg_rssi, d5);
   }
 
   if (d3 > 0 && d4 > 0 && d5 > 0) {
@@ -125,30 +122,24 @@ void setup() {
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
   if (esp_now_init() != ESP_OK) {
-    Serial.println("❌ ESP-NOW init failed");
+    Serial.println("\xe2\x9d\x8c ESP-NOW init failed");
     return;
   }
 
   esp_now_register_recv_cb(OnDataRecv);
   esp_now_register_send_cb(OnDataSent);
 
-  // Add Device 1 as peer
   esp_now_peer_info_t peer = {};
   memcpy(peer.peer_addr, device1_mac, 6);
   peer.channel = 0;
   peer.encrypt = false;
   if (esp_now_add_peer(&peer) != ESP_OK) {
-    Serial.println("❌ Failed to add peer");
+    Serial.println("\xe2\x9d\x8c Failed to add peer");
   }
 
   strcpy(outgoing_msg.device_type, ROLE);
   outgoing_msg.device_id = DEVICE_ID;
   outgoing_msg.tx_power = 19;
-
-  // Pre-fill buffers with -70 dBm for stable startup
-  for (int i = 0; i < RSSI_HISTORY_SIZE; i++) {
-    rssi3_history[i] = rssi4_history[i] = rssi5_history[i] = -70;
-  }
 }
 
 void loop() {
